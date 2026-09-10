@@ -100,6 +100,19 @@ def transform_data(table_name, df):
                     errors="coerce"
                 )
 
+    # Clean invalid payment installment values
+    if table_name == "payments":
+
+        invalid_rows = df["payment_installments"] <= 0
+
+        if invalid_rows.any():
+            print(
+                f"Removing {invalid_rows.sum()} invalid payment records "
+                f"with payment_installments <= 0"
+            )
+
+            df = df.loc[~invalid_rows].copy()
+
     return df
 
 
@@ -109,13 +122,12 @@ def load_to_postgres(table_name, df):
     print(f"Loading {table_name}...")
 
     df.to_sql(
-    table_name,
-    engine,
-    if_exists="append",
-    index=False,
-    method="multi",
-    chunksize=1000
-)
+        table_name,
+        engine,
+        if_exists="append",
+        index=False,
+        chunksize=1000
+    )
 
     print(
         f"Successfully loaded "
@@ -135,7 +147,6 @@ def main():
 
     # Only load the tables that failed previously
     tables_to_load = {
-        "payments": DATASETS["payments"],
         "reviews": DATASETS["reviews"],
     }
 
