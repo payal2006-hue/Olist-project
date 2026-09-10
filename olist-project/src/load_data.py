@@ -1,191 +1,308 @@
 import os
-from pathlib import Path
-
 import pandas as pd
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 
 # ============================================================
-# CONFIGURATION
+# 1. LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
 load_dotenv()
 
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+
+# ============================================================
+# 2. CHECK DATABASE CONFIGURATION
+# ============================================================
+
+print("Checking database configuration...")
+
+if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME]):
+    raise ValueError(
+        "Database configuration is incomplete. "
+        "Please check your .env file."
+    )
+
+print("Database configuration found.")
+
+
+# ============================================================
+# 3. CREATE DATABASE CONNECTION
+# ============================================================
 
 DATABASE_URL = (
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"postgresql+psycopg2://"
+    f"{DB_USER}:{DB_PASSWORD}@"
+    f"{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
 engine = create_engine(DATABASE_URL)
 
-DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "raw"
+print("PostgreSQL engine created.")
 
 
 # ============================================================
-# DATASETS
+# 4. CHECK DATABASE CONNECTION
 # ============================================================
 
-DATASETS = {
-    "customers": "olist_customers_dataset.csv",
-    "sellers": "olist_sellers_dataset.csv",
-    "products": "olist_products_dataset.csv",
-    "category_translation": "product_category_name_translation.csv",
-    "orders": "olist_orders_dataset.csv",
-    "order_items": "olist_order_items_dataset.csv",
-    "payments": "olist_order_payments_dataset.csv",
-    "reviews": "olist_order_reviews_dataset.csv",
-}
+with engine.connect() as connection:
+    result = connection.execute(
+        text("SELECT current_database(), current_user;")
+    )
+
+    print("\nPython is connected to:")
+    print(result.fetchone())
 
 
 # ============================================================
-# DATE COLUMNS
+# 5. FIND REVIEWS CSV
 # ============================================================
 
-DATE_COLUMNS = {
-    "orders": [
-        "order_purchase_timestamp",
-        "order_approved_at",
-        "order_delivered_carrier_date",
-        "order_delivered_customer_date",
-        "order_estimated_delivery_date",
-    ],
+PROJECT_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
-    "order_items": [
-        "shipping_limit_date",
-    ],
-
-    "reviews": [
-        "review_creation_date",
-        "review_answer_timestamp",
-    ],
-}
+REVIEWS_FILE = os.path.join(
+    PROJECT_DIR,
+    "data",
+    "raw",
+    "olist_order_reviews_dataset.csv"
+)
 
 
 # ============================================================
-# LOAD + TRANSFORM
+# 6. READ REVIEWS CSV
 # ============================================================
 
-def load_csv(table_name, filename):
-    """Read a CSV file into a pandas DataFrame."""
+print("\nReading reviews CSV...")
 
-    file_path = DATA_PATH / filename
+reviews = pd.read_csv(REVIEWS_FILE)
 
-    print(f"\nReading: {filename}")
-
-    df = pd.read_csv(file_path)
-
-    print(f"Rows loaded: {len(df):,}")
-
-    return df
+print(
+    f"Reviews CSV loaded: "
+    f"{len(reviews):,} rows"
+)
 
 
-def transform_data(table_name, df):
-    """Apply table-specific transformations."""
+# ============================================================
+# 7. CONVERT DATE COLUMNS
+# ============================================================
 
-    # Convert date columns
-    if table_name in DATE_COLUMNS:
+date_columns = [
+    "review_creation_date",
+    "review_answer_timestamp"
+]
 
-        for column in DATE_COLUMNS[table_name]:
+for column in date_columns:
 
-            if column in df.columns:
-                df[column] = pd.to_datetime(
-                    df[column],
-                    errors="coerce"
-                )
-
-    # Clean invalid payment installment values
-    if table_name == "payments":
-
-        invalid_rows = df["payment_installments"] <= 0
-
-        if invalid_rows.any():
-            print(
-                f"Removing {invalid_rows.sum()} invalid payment records "
-                f"with payment_installments <= 0"
-            )
-
-            df = df.loc[~invalid_rows].copy()
-
-    return df
+    reviews[column] = pd.to_datetime(
+        reviews[column],
+        errors="coerce"
+    )
 
 
-def load_to_postgres(table_name, df):
-    """Load DataFrame into PostgreSQL."""
+# ============================================================
+# 8. REMOVE DUPLICATES FROM CSV
+# ============================================================
 
-    print(f"Loading {table_name}...")
+before = len(reviews)
 
-    df.to_sql(
-        table_name,
-        engine,
-        if_exists="append",
-        index=False,
-        chunksize=1000
+reviews = reviews.drop_duplicates(
+    subset=["review_id"]
+)
+
+after = len(reviews)
+
+print(
+    f"\nDuplicate review IDs removed: "
+    f"{before - after:,}"
+)
+
+print(
+    f"Rows to load: "
+    f"{after:,}"
+)
+
+
+# ============================================================
+# 9. VALIDATE REVIEW IDs
+# ============================================================
+
+duplicate_ids = reviews[
+    reviews["review_id"].duplicated(keep=False)
+]
+
+if len(duplicate_ids) > 0:
+
+    print(
+        "\n❌ Duplicate review IDs still exist."
     )
 
     print(
-        f"Successfully loaded "
-        f"{len(df):,} rows into {table_name}"
+        duplicate_ids[
+            ["review_id", "order_id"]
+        ].head(20)
+    )
+
+    raise ValueError(
+        "Duplicate review_id values found."
+    )
+
+else:
+
+    print(
+        "✓ All review_id values are unique."
     )
 
 
 # ============================================================
-# MAIN ETL PIPELINE
+# 10. CLEAR EXISTING REVIEWS
 # ============================================================
 
-def main():
+print("\nClearing existing reviews table...")
 
-    print("=" * 60)
-    print("OLIST ETL PIPELINE")
-    print("=" * 60)
+with engine.begin() as connection:
 
-    # Only load the tables that failed previously
-    tables_to_load = {
-        "reviews": DATASETS["reviews"],
-    }
+    connection.execute(
+        text("TRUNCATE TABLE reviews;")
+    )
 
-    for table_name, filename in tables_to_load.items():
+print("✓ Reviews table cleared.")
 
-        try:
 
-            # Extract
-            df = load_csv(
-                table_name,
-                filename
+# ============================================================
+# 11. LOAD REVIEWS IN CHUNKS
+# ============================================================
+
+print("\nLoading reviews into PostgreSQL...")
+
+chunk_size = 1000
+
+total_loaded = 0
+
+try:
+
+    for start in range(
+        0,
+        len(reviews),
+        chunk_size
+    ):
+
+        end = min(
+            start + chunk_size,
+            len(reviews)
+        )
+
+        chunk = reviews.iloc[start:end]
+
+        # Each chunk gets its own transaction
+        with engine.begin() as connection:
+
+            chunk.to_sql(
+                "reviews",
+                connection,
+                if_exists="append",
+                index=False
             )
 
-            # Transform
-            df = transform_data(
-                table_name,
-                df
-            )
+        total_loaded += len(chunk)
 
-            # Load
-            load_to_postgres(
-                table_name,
-                df
-            )
-
-        except Exception as e:
-
-            print(
-                f"\nERROR loading {table_name}:"
-            )
-
-            print(e)
-
-            raise
-
-    print("\n" + "=" * 60)
-    print("ETL PIPELINE COMPLETED")
-    print("=" * 60)
+        print(
+            f"Loaded {total_loaded:,} / "
+            f"{len(reviews):,} rows"
+        )
 
 
-if __name__ == "__main__":
-    main()
+    print(
+        f"\n✅ Successfully loaded "
+        f"{total_loaded:,} reviews."
+    )
+
+
+except Exception as e:
+
+    print("\n❌ ERROR loading reviews")
+    print("----------------------------------------")
+
+    print(
+        "Exception type:",
+        type(e).__name__
+    )
+
+    print("\nError:")
+    print(e)
+
+    if hasattr(e, "orig"):
+
+        print("\nPostgreSQL error:")
+        print(e.orig)
+
+    print("----------------------------------------")
+
+    raise
+
+
+# ============================================================
+# 12. VERIFY DATABASE
+# ============================================================
+
+print("\nVerifying reviews table...")
+
+with engine.connect() as connection:
+
+    result = connection.execute(
+        text("SELECT COUNT(*) FROM reviews;")
+    )
+
+    count = result.scalar()
+
+
+# ============================================================
+# 13. FINAL RESULT
+# ============================================================
+
+print("\n========================================")
+print("REVIEWS ETL RESULT")
+print("========================================")
+
+print(
+    f"CSV rows:        {len(reviews):,}"
+)
+
+print(
+    f"Rows loaded:     {total_loaded:,}"
+)
+
+print(
+    f"PostgreSQL rows: {count:,}"
+)
+
+print("========================================")
+
+
+if count == len(reviews):
+
+    print(
+        "\n🎉 SUCCESS!"
+    )
+
+    print(
+        "All reviews were loaded successfully."
+    )
+
+else:
+
+    print(
+        "\n⚠️ WARNING!"
+    )
+
+    print(
+        "The PostgreSQL count does not match "
+        "the CSV count."
+    )
