@@ -52,6 +52,7 @@ print("PostgreSQL engine created.")
 # ============================================================
 
 with engine.connect() as connection:
+
     result = connection.execute(
         text("SELECT current_database(), current_user;")
     )
@@ -61,126 +62,171 @@ with engine.connect() as connection:
 
 
 # ============================================================
-# 5. FIND REVIEWS CSV
+# 5. SET PROJECT DIRECTORY
 # ============================================================
 
 PROJECT_DIR = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
 )
 
-REVIEWS_FILE = os.path.join(
+
+# ============================================================
+# 6. PAYMENTS CSV PATH
+# ============================================================
+
+PAYMENTS_FILE = os.path.join(
     PROJECT_DIR,
     "data",
     "raw",
-    "olist_order_reviews_dataset.csv"
+    "olist_order_payments_dataset.csv"
 )
 
 
 # ============================================================
-# 6. READ REVIEWS CSV
+# 7. READ PAYMENTS CSV
 # ============================================================
 
-print("\nReading reviews CSV...")
+print("\nReading payments CSV...")
 
-reviews = pd.read_csv(REVIEWS_FILE)
+payments = pd.read_csv(PAYMENTS_FILE)
 
 print(
-    f"Reviews CSV loaded: "
-    f"{len(reviews):,} rows"
+    f"Payments CSV loaded: "
+    f"{len(payments):,} rows"
 )
 
 
 # ============================================================
-# 7. CONVERT DATE COLUMNS
+# 8. DISPLAY COLUMNS
 # ============================================================
 
-date_columns = [
-    "review_creation_date",
-    "review_answer_timestamp"
-]
+print("\nPayments columns:")
 
-for column in date_columns:
-
-    reviews[column] = pd.to_datetime(
-        reviews[column],
-        errors="coerce"
-    )
+for column in payments.columns:
+    print(f"  - {column}")
 
 
 # ============================================================
-# 8. REMOVE DUPLICATES FROM CSV
+# 9. BASIC VALIDATION
 # ============================================================
 
-before = len(reviews)
-
-reviews = reviews.drop_duplicates(
-    subset=["review_id"]
-)
-
-after = len(reviews)
+print("\nBasic validation:")
 
 print(
-    f"\nDuplicate review IDs removed: "
-    f"{before - after:,}"
+    "Rows:",
+    f"{len(payments):,}"
 )
 
 print(
-    f"Rows to load: "
-    f"{after:,}"
+    "Columns:",
+    len(payments.columns)
+)
+
+print("\nMissing values:")
+
+print(
+    payments.isnull().sum()
 )
 
 
 # ============================================================
-# 9. VALIDATE REVIEW IDs
+# 10. CHECK PAYMENT KEYS
 # ============================================================
 
-duplicate_ids = reviews[
-    reviews["review_id"].duplicated(keep=False)
-]
+unique_keys = (
+    payments[
+        ["order_id", "payment_sequential"]
+    ]
+    .drop_duplicates()
+    .shape[0]
+)
 
-if len(duplicate_ids) > 0:
+duplicate_keys = (
+    payments[
+        ["order_id", "payment_sequential"]
+    ]
+    .duplicated()
+    .sum()
+)
+
+print("\nPayment key validation:")
+
+print(
+    "Total rows:",
+    f"{len(payments):,}"
+)
+
+print(
+    "Unique payment keys:",
+    f"{unique_keys:,}"
+)
+
+print(
+    "Duplicate payment keys:",
+    f"{duplicate_keys:,}"
+)
+
+
+# ============================================================
+# 11. VALIDATE PAYMENT VALUES
+# ============================================================
+
+negative_values = (
+    payments["payment_value"] < 0
+).sum()
+
+invalid_installments = (
+    payments["payment_installments"] < 0
+).sum()
+
+print("\nPayment value validation:")
+
+print(
+    "Negative payment values:",
+    negative_values
+)
+
+print(
+    "Invalid installments:",
+    invalid_installments
+)
+
+
+# ============================================================
+# 12. CLEAR EXISTING PAYMENTS TABLE
+# ============================================================
+
+print("\nClearing existing payments table...")
+
+try:
+
+    with engine.begin() as connection:
+
+        connection.execute(
+            text("TRUNCATE TABLE payments;")
+        )
+
+    print("✓ Payments table cleared.")
+
+except Exception as e:
 
     print(
-        "\n❌ Duplicate review IDs still exist."
+        "\n❌ Could not clear payments table."
     )
 
-    print(
-        duplicate_ids[
-            ["review_id", "order_id"]
-        ].head(20)
-    )
+    print("Error:")
+    print(e)
 
-    raise ValueError(
-        "Duplicate review_id values found."
-    )
-
-else:
-
-    print(
-        "✓ All review_id values are unique."
-    )
+    raise
 
 
 # ============================================================
-# 10. CLEAR EXISTING REVIEWS
+# 13. LOAD PAYMENTS INTO POSTGRESQL
 # ============================================================
 
-print("\nClearing existing reviews table...")
-
-with engine.begin() as connection:
-
-    connection.execute(
-        text("TRUNCATE TABLE reviews;")
-    )
-
-print("✓ Reviews table cleared.")
-
-
-# ============================================================
-# 11. LOAD REVIEWS IN CHUNKS
-# ============================================================
-
-print("\nLoading reviews into PostgreSQL...")
+print("\nLoading payments into PostgreSQL...")
 
 chunk_size = 1000
 
@@ -190,22 +236,21 @@ try:
 
     for start in range(
         0,
-        len(reviews),
+        len(payments),
         chunk_size
     ):
 
         end = min(
             start + chunk_size,
-            len(reviews)
+            len(payments)
         )
 
-        chunk = reviews.iloc[start:end]
+        chunk = payments.iloc[start:end]
 
-        # Each chunk gets its own transaction
         with engine.begin() as connection:
 
             chunk.to_sql(
-                "reviews",
+                "payments",
                 connection,
                 if_exists="append",
                 index=False
@@ -214,20 +259,20 @@ try:
         total_loaded += len(chunk)
 
         print(
-            f"Loaded {total_loaded:,} / "
-            f"{len(reviews):,} rows"
+            f"Loaded "
+            f"{total_loaded:,} / "
+            f"{len(payments):,} rows"
         )
-
 
     print(
         f"\n✅ Successfully loaded "
-        f"{total_loaded:,} reviews."
+        f"{total_loaded:,} payments."
     )
 
 
 except Exception as e:
 
-    print("\n❌ ERROR loading reviews")
+    print("\n❌ ERROR loading payments")
     print("----------------------------------------")
 
     print(
@@ -249,60 +294,117 @@ except Exception as e:
 
 
 # ============================================================
-# 12. VERIFY DATABASE
+# 14. VERIFY DATABASE ROW COUNT
 # ============================================================
 
-print("\nVerifying reviews table...")
+print("\nVerifying payments table...")
+
+try:
+
+    with engine.connect() as connection:
+
+        result = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM payments;"
+            )
+        )
+
+        database_count = result.scalar()
+
+except Exception as e:
+
+    print(
+        "\n❌ Could not verify payments table."
+    )
+
+    print("Error:")
+    print(e)
+
+    raise
+
+
+# ============================================================
+# 15. VERIFY PAYMENT KEYS IN DATABASE
+# ============================================================
 
 with engine.connect() as connection:
 
     result = connection.execute(
-        text("SELECT COUNT(*) FROM reviews;")
+        text(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT
+                    order_id,
+                    payment_sequential
+                FROM payments
+                GROUP BY
+                    order_id,
+                    payment_sequential
+            ) AS unique_payments;
+            """
+        )
     )
 
-    count = result.scalar()
+    database_unique_keys = result.scalar()
 
 
 # ============================================================
-# 13. FINAL RESULT
+# 16. FINAL RESULT
 # ============================================================
 
 print("\n========================================")
-print("REVIEWS ETL RESULT")
+print("PAYMENTS ETL RESULT")
 print("========================================")
 
 print(
-    f"CSV rows:        {len(reviews):,}"
+    f"CSV rows:              {len(payments):,}"
 )
 
 print(
-    f"Rows loaded:     {total_loaded:,}"
+    f"Unique CSV keys:       {unique_keys:,}"
 )
 
 print(
-    f"PostgreSQL rows: {count:,}"
+    f"Rows loaded:           {total_loaded:,}"
+)
+
+print(
+    f"PostgreSQL rows:       {database_count:,}"
+)
+
+print(
+    f"PostgreSQL unique keys:{database_unique_keys:,}"
 )
 
 print("========================================")
 
 
-if count == len(reviews):
+if (
+    database_count == len(payments)
+    and database_unique_keys == unique_keys
+):
+
+    print("\n🎉 SUCCESS!")
 
     print(
-        "\n🎉 SUCCESS!"
-    )
-
-    print(
-        "All reviews were loaded successfully."
+        "All payment records were loaded "
+        "successfully."
     )
 
 else:
 
+    print("\n⚠️ WARNING!")
+
     print(
-        "\n⚠️ WARNING!"
+        "The PostgreSQL data does not "
+        "match the CSV."
     )
 
     print(
-        "The PostgreSQL count does not match "
-        "the CSV count."
+        f"Expected rows: {len(payments):,}"
+    )
+
+    print(
+        f"Found rows:    {database_count:,}"
     )
